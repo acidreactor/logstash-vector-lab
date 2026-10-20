@@ -233,13 +233,3 @@ not tags : "_grokparsefailure"
 
 - Аутентификация Elasticsearch отключена (`xpack.security.enabled=false`) для упрощения стенда.
 - Пароли в `.env.example` учебные.
-
-## Остановка
-
-```bash
-docker compose -f vm1-cms/docker-compose.yml down
-docker compose -f vm2-elk/docker-compose.yml --profile logstash --profile vector down
-docker network rm lab2-net
-```
-
-Флаг `-v` дополнительно удалит тома с данными.
