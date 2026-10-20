@@ -1,0 +1,255 @@
+data_dir: /var/lib/vector
+
+sources:
+  beats:
+    type: logstash
+    address: 0.0.0.0:5044
+
+transforms:
+  parse:
+    type: remap
+    inputs: [beats]
+    source: |
+      svc = string(.service.name) ?? "unknown"
+      typ = string(.log_type) ?? "unknown"
+      .service.name = svc
+      ok = true
+
+      # ---------------- nginx ----------------
+      if svc == "nginx" && typ == "access" {
+        m, err = parse_regex(.message, r'^(?P<ip>\S+) - (?P<user>\S+) \[(?P<ts>[^\]]+)\] "(?:(?P<method>[A-Z]+) (?P<url>\S+)(?: HTTP/(?P<ver>[\d.]+))?|(?P<line>[^"]*))" (?P<status>\d{3}) (?P<bytes>\d+|-) "(?P<ref>[^"]*)" "(?P<ua>[^"]*)"$')
+        if err != null {
+          ok = false
+        } else {
+          .client.ip = m.ip
+          .user.name = m.user
+          if m.method != null { .http.request.method = m.method }
+          if m.url != null { .url.original = m.url }
+          if m.ver != null { .http.version = m.ver }
+          if m.line != null { .http.request.line = m.line }
+          .http.response.status_code = to_int(m.status) ?? 0
+          .http.response.body.bytes = to_int(m.bytes) ?? 0
+          .http.request.referrer = m.ref
+          .user_agent.original = m.ua
+          ."@timestamp" = format_timestamp!(parse_timestamp(m.ts, "%d/%b/%Y:%H:%M:%S %z") ?? now(), "%+")
+        }
+      } else if svc == "nginx" && typ == "error" {
+        m, err = parse_regex(.message, r'^(?P<ts>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] (?P<pid>\d+)#(?P<tid>\d+): (?:\*(?P<cid>\d+) )?(?P<msg>.*?)(?:, client: (?P<client>[^,]+))?(?:, server: (?P<server>[^,]*))?(?:, request: "(?P<request>[^"]*)")?(?:, upstream: "(?P<upstream>[^"]*)")?(?:, host: "(?P<host>[^"]*)")?(?:, referrer: "(?P<referrer>[^"]*)")?$')
+        if err != null {
+          ok = false
+        } else {
+          .log.level = downcase(m.level) ?? m.level
+          .process.pid = to_int(m.pid) ?? 0
+          .process.thread.id = to_int(m.tid) ?? 0
+          if m.cid != null { .nginx.connection_id = to_int(m.cid) ?? 0 }
+          .error.message = m.msg
+          if m.client != null { .client.ip = m.client }
+          if m.server != null { .nginx.server = m.server }
+          if m.request != null { .nginx.request = m.request }
+          if m.upstream != null { .nginx.upstream = m.upstream }
+          if m.host != null { .nginx.host = m.host }
+          if m.referrer != null { .nginx.referrer = m.referrer }
+          ."@timestamp" = format_timestamp!(parse_timestamp((string(m.ts) ?? "") + " +0000", "%Y/%m/%d %H:%M:%S %z") ?? now(), "%+")
+        }
+
+      # ---------------- php-fpm ----------------
+      } else if svc == "php-fpm" && typ == "access" {
+        m, err = parse_regex(.message, r'^(?P<ip>\S+) - (?P<user>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>\S+) (?P<url>\S+)" (?P<status>\d+) (?P<dur>[\d.]+) (?P<mem>[\d.]+)$')
+        if err != null {
+          ok = false
+        } else {
+          .client.ip = m.ip
+          .user.name = m.user
+          .http.request.method = m.method
+          .url.original = m.url
+          .http.response.status_code = to_int(m.status) ?? 0
+          .php.duration_ms = to_float(m.dur) ?? 0.0
+          .php.memory_kb = to_float(m.mem) ?? 0.0
+          ."@timestamp" = format_timestamp!(parse_timestamp(m.ts, "%d/%b/%Y:%H:%M:%S %z") ?? now(), "%+")
+        }
+      } else if svc == "php-fpm" && typ == "error" {
+        m, err = parse_regex(.message, r'^\[(?P<ts>[^\]]+)\] (?P<level>[A-Za-z]+): (?P<msg>.*)$')
+        if err != null {
+          ok = false
+        } else {
+          .log.level = downcase(m.level) ?? m.level
+          .error.message = m.msg
+          ."@timestamp" = format_timestamp!(parse_timestamp((string(m.ts) ?? "") + " +0000", "%d-%b-%Y %H:%M:%S %z") ?? now(), "%+")
+        }
+
+      # ---------------- mysql ----------------
+      } else if svc == "mysql" && typ == "error" {
+        m, err = parse_regex(.message, r'^(?P<ts>\S+) (?P<tid>\d+) \[(?P<level>[^\]]+)\] \[(?P<code>[^\]]+)\] \[(?P<sub>[^\]]+)\] (?P<msg>.*)$')
+        if err != null {
+          ok = false
+        } else {
+          .log.level = downcase(m.level) ?? m.level
+          .mysql.thread_id = to_int(m.tid) ?? 0
+          .mysql.error_code = m.code
+          .mysql.subsystem = m.sub
+          .error.message = m.msg
+          .@timestamp = m.ts
+        }
+      } else if svc == "mysql" && typ == "slowlog" {
+        m, err = parse_regex(.message, r'(?s)^# Time: (?P<ts>\S+)\n# User@Host: (?P<user>[^\[\s]+)\[[^\]]*\] @ (?P<domain>\S*) \[(?P<addr>[^\]]*)\]\s+Id:\s+(?P<id>\d+)\n# Query_time: (?P<qt>[\d.]+)\s+Lock_time: (?P<lt>[\d.]+)\s+Rows_sent: (?P<rs>\d+)\s+Rows_examined: (?P<rx>\d+)\n(?:use (?P<db>[^;]+);\n)?(?:SET timestamp=(?P<sts>\d+);\n)?(?P<query>.*)$')
+        if err != null {
+          ok = false
+        } else {
+          .user.name = m.user
+          .client.domain = m.domain
+          .client.address = m.addr
+          .mysql.thread_id = to_int(m.id) ?? 0
+          .mysql.query_time = to_float(m.qt) ?? 0.0
+          .mysql.lock_time = to_float(m.lt) ?? 0.0
+          .mysql.rows_sent = to_int(m.rs) ?? 0
+          .mysql.rows_examined = to_int(m.rx) ?? 0
+          if m.db != null { .mysql.database = m.db }
+          if m.sts != null { .mysql.timestamp = to_int(m.sts) ?? 0 }
+          .mysql.query = m.query
+          .@timestamp = m.ts
+        }
+      } else {
+        ok = false
+      }
+
+      if !ok {
+        .tags = append(array(.tags) ?? [], ["_parsefailure"])
+      }
+
+sinks:
+  elasticsearch:
+    type: elasticsearch
+    inputs: [parse]
+    endpoints: ["${ES_URL}"]
+    mode: bulk
+    api_version: v8
+    bulk:
+      index: "lab-vector-{{ service.name }}-%Y.%m.%d"
+
+# Проверка разбора: vector test vector.yaml
+tests:
+  - name: nginx access
+    inputs:
+      - insert_at: parse
+        type: log
+        log_fields:
+          service.name: nginx
+          log_type: access
+          message: '172.18.0.4 - - [20/Oct/2026:11:50:04 +0000] "GET /index.php?p=1 HTTP/1.1" 200 1234 "-" "curl/8.5.0"'
+    outputs:
+      - extract_from: parse
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.client.ip, "172.18.0.4")
+              assert_eq!(.http.request.method, "GET")
+              assert_eq!(.url.original, "/index.php?p=1")
+              assert_eq!(.http.response.status_code, 200)
+              assert_eq!(.http.response.body.bytes, 1234)
+              assert_eq!(.user_agent.original, "curl/8.5.0")
+              assert_eq!(."@timestamp", "2026-10-20T11:50:04+00:00")
+
+  - name: nginx error
+    inputs:
+      - insert_at: parse
+        type: log
+        log_fields:
+          service.name: nginx
+          log_type: error
+          message: '2026/10/20 11:50:04 [error] 29#29: *1 open() "/var/www/html/missing" failed (2: No such file or directory), client: 172.18.0.1, server: _, request: "GET /missing HTTP/1.1", host: "localhost:8080"'
+    outputs:
+      - extract_from: parse
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.log.level, "error")
+              assert_eq!(.process.pid, 29)
+              assert_eq!(.client.ip, "172.18.0.1")
+              assert_eq!(.nginx.request, "GET /missing HTTP/1.1")
+              assert_eq!(.nginx.host, "localhost:8080")
+              assert_eq!(."@timestamp", "2026-10-20T11:50:04+00:00")
+
+  - name: php-fpm access
+    inputs:
+      - insert_at: parse
+        type: log
+        log_fields:
+          service.name: php-fpm
+          log_type: access
+          message: '172.18.0.5 - - [20/Oct/2026:11:50:04 +0000] "GET /index.php" 200 45.123 2048'
+    outputs:
+      - extract_from: parse
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.client.ip, "172.18.0.5")
+              assert_eq!(.http.response.status_code, 200)
+              assert_eq!(.php.duration_ms, 45.123)
+              assert_eq!(.php.memory_kb, 2048.0)
+
+  - name: php-fpm error
+    inputs:
+      - insert_at: parse
+        type: log
+        log_fields:
+          service.name: php-fpm
+          log_type: error
+          message: '[20-Oct-2026 11:50:04] NOTICE: ready to handle connections'
+    outputs:
+      - extract_from: parse
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.log.level, "notice")
+              assert_eq!(.error.message, "ready to handle connections")
+              assert_eq!(."@timestamp", "2026-10-20T11:50:04+00:00")
+
+  - name: mysql error
+    inputs:
+      - insert_at: parse
+        type: log
+        log_fields:
+          service.name: mysql
+          log_type: error
+          message: "2026-10-20T11:50:05.123456Z 0 [Warning] [MY-011068] [Server] The syntax '--skip-host-cache' is deprecated."
+    outputs:
+      - extract_from: parse
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.log.level, "warning")
+              assert_eq!(.mysql.error_code, "MY-011068")
+              assert_eq!(.mysql.subsystem, "Server")
+
+  - name: mysql slow log
+    inputs:
+      - insert_at: parse
+        type: log
+        log_fields:
+          service.name: mysql
+          log_type: slowlog
+          message: "# Time: 2026-10-20T11:57:29.123456Z\n# User@Host: root[root] @ localhost []  Id:     8\n# Query_time: 2.000253  Lock_time: 0.000000 Rows_sent: 1  Rows_examined: 1\nSET timestamp=1760961449;\nSELECT SLEEP(2);"
+    outputs:
+      - extract_from: parse
+        conditions:
+          - type: vrl
+            source: |
+              assert_eq!(.user.name, "root")
+              assert_eq!(.mysql.thread_id, 8)
+              assert_eq!(.mysql.query_time, 2.000253)
+              assert_eq!(.mysql.query, "SELECT SLEEP(2);")
+
+  - name: unparsable line is tagged
+    inputs:
+      - insert_at: parse
+        type: log
+        log_fields:
+          service.name: nginx
+          log_type: access
+          message: "not an nginx line"
+    outputs:
+      - extract_from: parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(includes(array!(.tags), "_parsefailure"))

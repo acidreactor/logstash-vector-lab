@@ -1,0 +1,116 @@
+name: lab2-vm2-elk
+
+# Приёмник логов запускается в одном из двух вариантов (профили):
+#   docker compose --profile logstash up -d
+#   docker compose --profile vector up -d
+# Оба слушают порт 5044 (Beats / Lumberjack) и доступны в сети под именем ingest,
+# поэтому одновременно должен работать только один из них.
+
+services:
+  elasticsearch:
+    image: elasticsearch:${STACK_VERSION}
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -vq '\"status\":\"red\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [lab2-net]
+
+  kibana:
+    image: kibana:${STACK_VERSION}
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks: [lab2-net]
+
+  # ILM-политики и шаблоны индексов
+  setup:
+    image: curlimages/curl:8.10.1
+    entrypoint: ["/bin/sh", "/scripts/setup-es.sh"]
+    environment:
+      ES_URL: http://elasticsearch:9200
+    volumes:
+      - ./scripts/setup-es.sh:/scripts/setup-es.sh:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks: [lab2-net]
+
+  # каталог для Dead Letter Queue Logstash (права для пользователя logstash, uid 1000)
+  logstash-init:
+    image: busybox:1.36
+    profiles: ["logstash"]
+    command: sh -c "mkdir -p /data/dlq/main && chown -R 1000:1000 /data"
+    volumes:
+      - logstash_data:/data
+    networks: [lab2-net]
+
+  logstash:
+    image: logstash:${STACK_VERSION}
+    profiles: ["logstash"]
+    restart: unless-stopped
+    environment:
+      ES_URL: http://elasticsearch:9200
+      LS_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash/config/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - logstash_data:/usr/share/logstash/data
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      logstash-init:
+        condition: service_completed_successfully
+    networks:
+      lab2-net:
+        aliases: [ingest]
+
+  vector:
+    image: timberio/vector:0.43.1-alpine
+    profiles: ["vector"]
+    restart: unless-stopped
+    command: ["--config", "/etc/vector/vector.yaml"]
+    environment:
+      ES_URL: http://elasticsearch:9200
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - vector_data:/var/lib/vector
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    networks:
+      lab2-net:
+        aliases: [ingest]
+
+volumes:
+  es_data:
+  logstash_data:
+  vector_data:
+
+networks:
+  lab2-net:
+    external: true
+    name: lab2-net

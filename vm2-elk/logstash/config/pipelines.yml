@@ -1,0 +1,6 @@
+- pipeline.id: main
+  path.config: "/usr/share/logstash/pipeline/main.conf"
+
+# читает Dead Letter Queue основного пайплайна и складывает записи в индекс lab-dlq-*
+- pipeline.id: dlq-reader
+  path.config: "/usr/share/logstash/pipeline/dlq.conf"

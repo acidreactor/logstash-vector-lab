@@ -1,0 +1,6 @@
+[mysqld]
+log_error = /var/log/mysql/error.log
+log_error_verbosity = 3
+slow_query_log = 1
+slow_query_log_file = /var/log/mysql/slow.log
+long_query_time = 1

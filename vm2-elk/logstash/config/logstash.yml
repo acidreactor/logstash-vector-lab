@@ -1,0 +1,7 @@
+http.host: "0.0.0.0"
+pipeline.workers: 2
+
+# Dead Letter Queue: сюда попадают события, которые Elasticsearch отклонил (ошибки маппинга, HTTP 400/404)
+dead_letter_queue.enable: true
+dead_letter_queue.max_bytes: 512mb
+path.dead_letter_queue: /usr/share/logstash/data/dlq

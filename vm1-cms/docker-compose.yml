@@ -1,0 +1,93 @@
+name: lab2-vm1-cms
+
+services:
+  init-perms:
+    image: busybox:1.36
+    command: sh -c "chmod 0777 /var/log/mysql"
+    volumes:
+      - mysql_logs:/var/log/mysql
+    networks: [lab2-net]
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - mysql_logs:/var/log/mysql
+      - ./mysql/lab.cnf:/etc/mysql/conf.d/lab.cnf:ro
+    depends_on:
+      init-perms:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [lab2-net]
+
+  php-fpm:
+    image: wordpress:php8.2-fpm
+    restart: unless-stopped
+    environment:
+      WORDPRESS_DB_HOST: mysql
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - wp_data:/var/www/html
+      - php_logs:/var/log/php-fpm
+      - ./php-fpm/zzz-logs.conf:/usr/local/etc/php-fpm.d/zzz-logs.conf:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks: [lab2-net]
+
+  nginx:
+    image: nginx:1.27
+    restart: unless-stopped
+    ports:
+      - "${CMS_PORT:-8080}:80"
+    volumes:
+      - wp_data:/var/www/html:ro
+      - nginx_logs:/var/log/lab-nginx
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - php-fpm
+    networks: [lab2-net]
+
+  filebeat:
+    image: elastic/filebeat:${STACK_VERSION}
+    restart: unless-stopped
+    user: root
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    environment:
+      PIPELINE_HOST: ${PIPELINE_HOST}
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - filebeat_data:/usr/share/filebeat/data
+      - nginx_logs:/var/log/lab-nginx:ro
+      - php_logs:/var/log/php-fpm:ro
+      - mysql_logs:/var/log/mysql:ro
+    depends_on:
+      - nginx
+      - php-fpm
+      - mysql
+    networks: [lab2-net]
+
+volumes:
+  mysql_data:
+  mysql_logs:
+  wp_data:
+  php_logs:
+  nginx_logs:
+  filebeat_data:
+
+networks:
+  lab2-net:
+    external: true
+    name: lab2-net

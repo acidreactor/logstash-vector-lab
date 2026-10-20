@@ -1,0 +1,69 @@
+name: vm1-cms
+
+# Filebeat только собирает строки и отправляет их как есть.
+# Разбор (grok / VRL) выполняется на второй ВМ.
+filebeat.inputs:
+  - type: filestream
+    id: nginx-access
+    paths:
+      - /var/log/lab-nginx/access.log
+    fields_under_root: true
+    fields:
+      service.name: nginx
+      log_type: access
+
+  - type: filestream
+    id: nginx-error
+    paths:
+      - /var/log/lab-nginx/error.log
+    fields_under_root: true
+    fields:
+      service.name: nginx
+      log_type: error
+
+  - type: filestream
+    id: php-fpm-access
+    paths:
+      - /var/log/php-fpm/access.log
+    fields_under_root: true
+    fields:
+      service.name: php-fpm
+      log_type: access
+
+  - type: filestream
+    id: php-fpm-error
+    paths:
+      - /var/log/php-fpm/error.log
+    fields_under_root: true
+    fields:
+      service.name: php-fpm
+      log_type: error
+
+  - type: filestream
+    id: mysql-error
+    paths:
+      - /var/log/mysql/error.log
+    fields_under_root: true
+    fields:
+      service.name: mysql
+      log_type: error
+
+  - type: filestream
+    id: mysql-slow
+    paths:
+      - /var/log/mysql/slow.log
+    fields_under_root: true
+    fields:
+      service.name: mysql
+      log_type: slowlog
+    parsers:
+      - multiline:
+          type: pattern
+          pattern: "^# Time:"
+          negate: true
+          match: after
+
+output.logstash:
+  hosts: ["${PIPELINE_HOST}"]
+
+logging.level: info
